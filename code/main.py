@@ -24,8 +24,6 @@ st.title("🔋 ESS 날짜별 충전량과 방전량")
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# main.py가 code 폴더 안에 있을 때와
-# 저장소 최상위 폴더에 있을 때 모두 대응
 DATA_DIR = BASE_DIR / "data"
 
 if not DATA_DIR.exists():
@@ -54,51 +52,81 @@ def load_data():
 
 
 if not FILE_2024.exists() or not FILE_2025.exists():
-    st.error("2024년 또는 2025년 CSV 파일을 찾을 수 없습니다.")
+    st.error("CSV 파일을 찾을 수 없습니다.")
     st.stop()
 
 try:
     df = load_data()
 
 except Exception as e:
-    st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}")
+    st.error(f"데이터 불러오기 오류: {e}")
     st.stop()
 
 
 # =========================================================
-# 날짜, 충전량, 방전량 열 찾기
+# 실제 CSV 열 이름 사용
 # =========================================================
 
-date_col = next(
-    (c for c in df.columns
-     if "날짜" in c or "일자" in c or "date" in c.lower()),
-    None
-)
+date_col = "거래일"
+year_col = "연도"
+charge_col = "충전량 합계(kWh)"
+discharge_col = "방전량 합계(kWh)"
 
-charge_col = next(
-    (c for c in df.columns if "충전" in c),
-    None
-)
+required_cols = [
+    date_col,
+    year_col,
+    charge_col,
+    discharge_col
+]
 
-discharge_col = next(
-    (c for c in df.columns if "방전" in c),
-    None
-)
-
-if date_col is None or charge_col is None or discharge_col is None:
-    st.error("날짜, 충전량, 방전량 열을 찾을 수 없습니다.")
-    st.write("CSV 열 이름:", df.columns.tolist())
+if not all(col in df.columns for col in required_cols):
+    st.error("CSV 열 이름이 예상과 다릅니다.")
+    st.write(df.columns.tolist())
     st.stop()
 
 
 # =========================================================
-# 데이터 전처리
+# 날짜 데이터 처리
 # =========================================================
 
-df[date_col] = pd.to_datetime(
-    df[date_col],
+# 거래일을 문자열로 변환
+date_text = df[date_col].astype(str).str.strip()
+
+# 한글 날짜 형식 정리
+normalized_date = (
+    date_text
+    .str.replace("년", "-", regex=False)
+    .str.replace("월", "-", regex=False)
+    .str.replace("일", "", regex=False)
+    .str.strip()
+)
+
+# 거래일 자체에 연도가 포함된 경우
+direct_date = pd.to_datetime(
+    normalized_date,
     errors="coerce"
 )
+
+# 연도가 따로 있는 경우
+combined_date = pd.to_datetime(
+    df[year_col].astype(str) + "-" + normalized_date,
+    errors="coerce"
+)
+
+# 거래일에 연도가 없거나 날짜 변환에 실패한 경우
+df["날짜"] = direct_date
+
+invalid = (
+    df["날짜"].isna()
+    | (df["날짜"].dt.year != pd.to_numeric(df[year_col], errors="coerce"))
+)
+
+df.loc[invalid, "날짜"] = combined_date[invalid]
+
+
+# =========================================================
+# 충전량과 방전량 숫자 변환
+# =========================================================
 
 df[charge_col] = pd.to_numeric(
     df[charge_col],
@@ -110,12 +138,15 @@ df[discharge_col] = pd.to_numeric(
     errors="coerce"
 )
 
-df = df.dropna(subset=[date_col])
+df = df.dropna(subset=["날짜"])
 
-# 날짜별 충전량과 방전량 합계
-# 지역별 데이터가 있다면 전체 지역의 합계로 계산
+
+# =========================================================
+# 날짜별 전체 지역 합계 계산
+# =========================================================
+
 daily = (
-    df.groupby(date_col)
+    df.groupby("날짜")
     .agg({
         charge_col: lambda x: x.sum(min_count=1),
         discharge_col: lambda x: x.sum(min_count=1)
@@ -123,7 +154,7 @@ daily = (
     .reset_index()
 )
 
-daily = daily.sort_values(date_col)
+daily = daily.sort_values("날짜")
 
 
 # =========================================================
@@ -134,22 +165,20 @@ fig = go.Figure()
 
 fig.add_trace(
     go.Scatter(
-        x=daily[date_col],
+        x=daily["날짜"],
         y=daily[charge_col],
         mode="lines",
         name="충전량",
-        line=dict(width=2),
         connectgaps=False
     )
 )
 
 fig.add_trace(
     go.Scatter(
-        x=daily[date_col],
+        x=daily["날짜"],
         y=daily[discharge_col],
         mode="lines",
         name="방전량",
-        line=dict(width=2),
         connectgaps=False
     )
 )
@@ -157,10 +186,10 @@ fig.add_trace(
 fig.update_layout(
     title="2024~2025년 ESS 날짜별 충전량과 방전량",
     xaxis_title="날짜",
-    yaxis_title="전력량",
+    yaxis_title="전력량 (kWh)",
     hovermode="x unified",
-    legend_title="구분",
-    template="plotly_white"
+    template="plotly_white",
+    legend_title="구분"
 )
 
 st.plotly_chart(
