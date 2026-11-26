@@ -1,7 +1,8 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
+from pathlib import Path
 
 
 # =========================================================
@@ -9,55 +10,71 @@ import plotly.express as px
 # =========================================================
 
 st.set_page_config(
-    page_title="ESS 월별 충전량과 방전량",
+    page_title="ESS 날짜별 충전량과 방전량",
     page_icon="🔋",
     layout="wide"
 )
 
-st.title("🔋 ESS의 월별 충전량과 방전량은 계절에 따라 어떤 차이를 보일까?")
-st.write(
-    "2024년과 2025년 ESS 데이터를 이용해 "
-    "월별 충전량과 방전량을 계절별로 비교합니다."
-)
+st.title("🔋 ESS 날짜별 충전량과 방전량")
+
+
+# =========================================================
+# 데이터 파일 경로
+# =========================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# main.py가 code 폴더 안에 있을 때와
+# 저장소 최상위 폴더에 있을 때 모두 대응
+DATA_DIR = BASE_DIR / "data"
+
+if not DATA_DIR.exists():
+    DATA_DIR = BASE_DIR.parent / "data"
+
+FILE_2024 = DATA_DIR / "지역별 에너지저장장치(ESS) 일단위 충전 및 방전 실적_2024.csv"
+FILE_2025 = DATA_DIR / "지역별 에너지저장장치(ESS) 일단위 충전 및 방전 실적_2025.csv"
 
 
 # =========================================================
 # 데이터 불러오기
 # =========================================================
 
-URL_2024 = "지역별 에너지저장장치(ESS) 일단위 충전 및 방전 실적_2024.csv"
-URL_2025 = "지역별 에너지저장장치(ESS) 일단위 충전 및 방전 실적_2025.csv"
-
 @st.cache_data
 def load_data():
-    df_2024 = pd.read_csv(URL_2024, encoding="utf-8-sig")
-    df_2025 = pd.read_csv(URL_2025, encoding="utf-8-sig")
 
-    df = pd.concat([df_2024, df_2025], ignore_index=True)
+    df_2024 = pd.read_csv(FILE_2024, encoding="utf-8-sig")
+    df_2025 = pd.read_csv(FILE_2025, encoding="utf-8-sig")
+
+    df = pd.concat(
+        [df_2024, df_2025],
+        ignore_index=True
+    )
 
     return df
 
+
+if not FILE_2024.exists() or not FILE_2025.exists():
+    st.error("2024년 또는 2025년 CSV 파일을 찾을 수 없습니다.")
+    st.stop()
 
 try:
     df = load_data()
 
 except Exception as e:
-    st.error("데이터 파일을 불러오지 못했습니다.")
-    st.info("CSV 파일을 main.py와 같은 폴더에 넣어 주세요.")
+    st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}")
     st.stop()
 
 
 # =========================================================
-# 데이터 전처리
+# 날짜, 충전량, 방전량 열 찾기
 # =========================================================
 
-# 날짜 열 찾기
 date_col = next(
-    (c for c in df.columns if "날짜" in c or "일자" in c or "date" in c.lower()),
+    (c for c in df.columns
+     if "날짜" in c or "일자" in c or "date" in c.lower()),
     None
 )
 
-# 충전량과 방전량 열 찾기
 charge_col = next(
     (c for c in df.columns if "충전" in c),
     None
@@ -68,175 +85,85 @@ discharge_col = next(
     None
 )
 
-if not all([date_col, charge_col, discharge_col]):
+if date_col is None or charge_col is None or discharge_col is None:
     st.error("날짜, 충전량, 방전량 열을 찾을 수 없습니다.")
-    st.write("현재 CSV 열 이름:", df.columns.tolist())
+    st.write("CSV 열 이름:", df.columns.tolist())
     st.stop()
 
-df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 
-df[charge_col] = pd.to_numeric(df[charge_col], errors="coerce")
-df[discharge_col] = pd.to_numeric(df[discharge_col], errors="coerce")
+# =========================================================
+# 데이터 전처리
+# =========================================================
+
+df[date_col] = pd.to_datetime(
+    df[date_col],
+    errors="coerce"
+)
+
+df[charge_col] = pd.to_numeric(
+    df[charge_col],
+    errors="coerce"
+)
+
+df[discharge_col] = pd.to_numeric(
+    df[discharge_col],
+    errors="coerce"
+)
 
 df = df.dropna(subset=[date_col])
 
-df["연도"] = df[date_col].dt.year
-df["월"] = df[date_col].dt.month
-
-# 계절 구분
-season_map = {
-    12: "겨울",
-    1: "겨울",
-    2: "겨울",
-    3: "봄",
-    4: "봄",
-    5: "봄",
-    6: "여름",
-    7: "여름",
-    8: "여름",
-    9: "가을",
-    10: "가을",
-    11: "가을"
-}
-
-df["계절"] = df["월"].map(season_map)
-
-# 월별 충전량과 방전량 합계
-monthly = (
-    df.groupby(["연도", "월", "계절"], as_index=False)
+# 날짜별 충전량과 방전량 합계
+# 지역별 데이터가 있다면 전체 지역의 합계로 계산
+daily = (
+    df.groupby(date_col)
     .agg({
-        charge_col: "sum",
-        discharge_col: "sum"
+        charge_col: lambda x: x.sum(min_count=1),
+        discharge_col: lambda x: x.sum(min_count=1)
     })
+    .reset_index()
 )
 
-monthly = monthly.sort_values(["연도", "월"])
-
-# 계절 순서
-season_order = ["봄", "여름", "가을", "겨울"]
+daily = daily.sort_values(date_col)
 
 
 # =========================================================
-# 월별 충전량과 방전량
+# 날짜별 충전량과 방전량 그래프
 # =========================================================
 
-st.header("1. 월별 충전량과 방전량")
+fig = go.Figure()
 
-monthly["연월"] = (
-    monthly["연도"].astype(str)
-    + "-"
-    + monthly["월"].astype(str).str.zfill(2)
+fig.add_trace(
+    go.Scatter(
+        x=daily[date_col],
+        y=daily[charge_col],
+        mode="lines",
+        name="충전량",
+        line=dict(width=2),
+        connectgaps=False
+    )
 )
 
-monthly_long = monthly.melt(
-    id_vars=["연도", "월", "계절", "연월"],
-    value_vars=[charge_col, discharge_col],
-    var_name="구분",
-    value_name="전력량"
+fig.add_trace(
+    go.Scatter(
+        x=daily[date_col],
+        y=daily[discharge_col],
+        mode="lines",
+        name="방전량",
+        line=dict(width=2),
+        connectgaps=False
+    )
 )
 
-fig1 = px.bar(
-    monthly_long,
-    x="연월",
-    y="전력량",
-    color="구분",
-    barmode="group",
-    title="월별 ESS 충전량과 방전량",
-    labels={
-        "연월": "연월",
-        "전력량": "전력량",
-        "구분": "구분"
-    },
-    hover_data=["계절"]
+fig.update_layout(
+    title="2024~2025년 ESS 날짜별 충전량과 방전량",
+    xaxis_title="날짜",
+    yaxis_title="전력량",
+    hovermode="x unified",
+    legend_title="구분",
+    template="plotly_white"
 )
 
-st.plotly_chart(fig1, use_container_width=True)
-
-
-# =========================================================
-# 계절별 월평균 충전량과 방전량
-# =========================================================
-
-st.header("2. 계절별 충전량과 방전량 비교")
-
-# 연도별 월 합계를 바탕으로 계절별 월평균 계산
-seasonal = (
-    monthly.groupby("계절", as_index=False)
-    .agg({
-        charge_col: "mean",
-        discharge_col: "mean"
-    })
+st.plotly_chart(
+    fig,
+    use_container_width=True
 )
-
-seasonal_long = seasonal.melt(
-    id_vars="계절",
-    value_vars=[charge_col, discharge_col],
-    var_name="구분",
-    value_name="월평균 전력량"
-)
-
-fig2 = px.bar(
-    seasonal_long,
-    x="계절",
-    y="월평균 전력량",
-    color="구분",
-    barmode="group",
-    category_orders={"계절": season_order},
-    title="계절별 월평균 ESS 충전량과 방전량",
-    labels={
-        "계절": "계절",
-        "월평균 전력량": "월평균 전력량",
-        "구분": "구분"
-    }
-)
-
-st.plotly_chart(fig2, use_container_width=True)
-
-
-# =========================================================
-# 계절별 충전량과 방전량 표
-# =========================================================
-
-st.header("3. 계절별 월평균 전력량")
-
-result = seasonal.copy()
-
-result = result.rename(columns={
-    charge_col: "월평균 충전량",
-    discharge_col: "월평균 방전량"
-})
-
-result["계절"] = pd.Categorical(
-    result["계절"],
-    categories=season_order,
-    ordered=True
-)
-
-result = result.sort_values("계절")
-
-st.dataframe(
-    result,
-    use_container_width=True,
-    hide_index=True
-)
-
-
-# =========================================================
-# 분석 결과
-# =========================================================
-
-st.header("4. 분석 결과")
-
-max_charge = seasonal.loc[seasonal[charge_col].idxmax()]
-max_discharge = seasonal.loc[seasonal[discharge_col].idxmax()]
-
-st.write(
-    f"**월평균 충전량이 가장 많은 계절:** "
-    f"{max_charge['계절']}"
-)
-
-st.write(
-    f"**월평균 방전량이 가장 많은 계절:** "
-    f"{max_discharge['계절']}"
-)
-
